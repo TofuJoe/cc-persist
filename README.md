@@ -74,8 +74,25 @@ from its on-disk transcript after a reboot/logout just as it does after a hard c
 > processes are no longer reaped the dead session keeps squatting on `seat0`, so every
 > new graphical login bounces back to GDM (`gnome-shell … NotInControl`). Recovery was
 > `loginctl terminate-session <stale-id>` from a text VT. If you ever want full-logout
-> survival, the safe route is `loginctl enable-linger` **plus** launching the server inside
-> a `systemd-run --user --scope` unit — deliberately NOT done here, to keep this simple.
+> survival, the safe route is `loginctl enable-linger` on top of the `cc.slice` scope launch
+> below (the scope lives under `user@.service`, which linger keeps alive across logout).
+
+## Desktop priority: `cc.slice`
+
+ccmux launches the program via `systemd-run --user --scope --slice=cc.slice`, so every
+session and everything it spawns (tool shells, builds, subagents) sits in one cgroup,
+`cc.slice/ccmux-<session>-<pid>.scope` (the pid keeps a scope that outlives its session —
+a lingering backgrounded child, say — from blocking a relaunch of the same name). `~/.config/systemd/user/cc.slice` sets its weight against
+the rest of the desktop: `CPUWeight=20`, `IOWeight=20` (gnome-shell in session.slice is 500
+via uresourced, ordinary apps 100) and `MemoryHigh=8G`, so a fleet of sessions gets
+reclaimed and throttled before gnome-shell is pushed into swap. systemd-oomd kills the worst
+session cgroup at 50% memory-pressure for 10 s, same as app.slice. `nice` cannot do this:
+with the cpu controller on, nice only ranks tasks *within* a cgroup.
+
+Edit the slice file and `systemctl --user daemon-reload` to retune (applies to running
+sessions); `CPUWeight=idle` runs sessions only on otherwise-idle CPU. `CCMUX_SLICE=` (empty)
+disables the wrapper; ccmux also falls back to a plain exec when `systemd-run` or
+`XDG_RUNTIME_DIR` is missing. `systemctl --user list-units 'ccmux-*'` shows the live scopes.
 
 ## Naming model
 

@@ -23,8 +23,12 @@ Env:
   CCMUX_DIR     session socket dir (default ~/.ccmux)
   CCMUX_DETACH  detach key byte, e.g. \\x1c (default Ctrl-\\)
   CCMUX_BUF     max replay-buffer bytes shown on reattach (default 1048576)
+  CCMUX_SLICE   systemd user slice the program is launched into via
+                `systemd-run --user --scope` (default cc.slice; empty = plain exec).
+                Puts every session + its subprocesses in one cgroup whose CPU/IO/memory
+                weight vs. the desktop is set in ~/.config/systemd/user/cc.slice.
 """
-import os, sys, pty, socket, select, struct, fcntl, termios, signal, time, tty, stat
+import os, sys, pty, socket, select, struct, fcntl, termios, signal, time, tty, stat, re, shutil
 
 DIR = os.environ.get("CCMUX_DIR") or os.path.join(os.path.expanduser("~"), ".ccmux")
 _dk = os.environ.get("CCMUX_DETACH")
@@ -35,6 +39,22 @@ else:
     DETACH = b"\x1c"                       # Ctrl-\
 try: MAXBUF = max(0, int(os.environ.get("CCMUX_BUF") or (1 << 20)))
 except ValueError: MAXBUF = 1 << 20
+SLICE = os.environ.get("CCMUX_SLICE", "cc.slice")
+
+
+def _scoped(name, cmd):
+    """Wrap cmd so it runs in its own transient scope under SLICE (cgroup weights apply to
+    the program and everything it spawns). Falls back to cmd unchanged when disabled or
+    when there is no user systemd to talk to. systemd-run --scope exec()s the command in
+    place, so the pty/ctty set up by the caller are inherited untouched."""
+    if not SLICE or not shutil.which("systemd-run") or not os.environ.get("XDG_RUNTIME_DIR"):
+        return cmd
+    # pid suffix: a scope outlives its session while any child lingers (e.g. a GUI app
+    # Claude backgrounded), so a fixed name would block relaunching the same session.
+    unit = "ccmux-%s-%d" % (re.sub(r"[^A-Za-z0-9_.:-]", "_", name), os.getpid())
+    return ["systemd-run", "--user", "--scope", "--quiet", "--collect",
+            "--slice=" + SLICE, "--unit=" + unit,
+            "--description=ccmux session " + name, "--"] + list(cmd)
 
 
 def _sock(name): return os.path.join(DIR, name)
@@ -78,6 +98,7 @@ def _server(lsock, cmd, initsz, path):
         os.dup2(slave, 0); os.dup2(slave, 1); os.dup2(slave, 2)
         if master > 2: os.close(master)
         if slave > 2:  os.close(slave)
+        cmd = _scoped(os.path.basename(path), cmd)
         try: os.execvp(cmd[0], cmd)
         except Exception as e:
             os.write(2, ("ccmux: exec failed: %s\r\n" % e).encode()); os._exit(127)
