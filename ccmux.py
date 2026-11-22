@@ -188,7 +188,28 @@ def _server(lsock, cmd, initsz, path):
 
 
 # --------------------------------------------------------------------------- client
+def _set_cmdline(title):
+    """Rewrite this process's /proc/self/cmdline to `title` (like setproctitle(3)).
+
+    Ptyxis appends the foreground process's full command line to the tab title
+    ("~/ai#2 — python3 /home/.../ccmux.py run cc-ai-...-2 claude"); this shortens it.
+    We overwrite the argv area in place via /proc/self/mem: `title` + NUL, then
+    non-NUL padding. A non-NUL final byte tells the kernel to report only up to the
+    first NUL. Best effort: any failure leaves the cmdline untouched."""
+    try:
+        with open("/proc/self/stat", "rb") as f:
+            fields = f.read().rsplit(b")", 1)[1].split()
+        start, end = int(fields[45]), int(fields[46])   # arg_start, arg_end (stat fields 48, 49)
+        t = title.encode()[: end - start - 2]
+        with open("/proc/self/mem", "r+b", buffering=0) as m:
+            m.seek(start)
+            m.write(t + b"\0" + b" " * (end - start - len(t) - 1))
+    except (OSError, ValueError, IndexError):
+        pass
+
+
 def _client(c):
+    _set_cmdline("ccmux")
     try: c.sendall(b"A")
     except OSError: sys.exit("ccmux: attach failed")
     try: msg, fds, _, _ = socket.recv_fds(c, 1, 1)
