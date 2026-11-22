@@ -39,8 +39,17 @@ cc(){
     idx=1; while grep -qx "$idx" <<<"$used"; do idx=$((idx+1)); done
   fi
   printf '\033]0;%s\007' "${PWD/#$HOME/\~}#${idx}"   # label the tab: ~/path#idx
+  local iso=()
+  [[ $CC_CMD == claude && ${CC_ISOLATE:-ask} != 0 ]] && iso=(--settings "$(_cc_isolate_settings)")
   # Stop Claude from overwriting the tab title with its own.
-  CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 $CCMUX run "${prefix}${idx}" "$CC_CMD" "$@"
+  CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 $CCMUX run "${prefix}${idx}" "$CC_CMD" "${iso[@]}" "$@"
+}
+
+# Hooks that stop a session messaging peer sessions (other terminals); see cc-isolate.py.
+# CC_ISOLATE=ask (default) prompts, =deny refuses, =0 disables. Read at session start.
+_cc_isolate_settings(){
+  local h="CC_ISOLATE=${CC_ISOLATE:-ask} python3 $_cc_dir/cc-isolate.py"
+  printf '{"hooks":{"PreToolUse":[{"matcher":"SendMessage","hooks":[{"type":"command","command":"%s guard"}]}],"PostToolUse":[{"matcher":"Agent|SendMessage|ListAgents","hooks":[{"type":"command","command":"%s record"}]}]}}' "$h" "$h"
 }
 
 # Shared pretty-printer. Emits: "  #IDX  STATE  PROJECT  CREATED  NOTE"
