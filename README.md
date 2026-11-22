@@ -96,7 +96,9 @@ disables the wrapper; ccmux also falls back to a plain exec when `systemd-run` o
 
 ## Naming model
 
-Session name = `cc-<dir-basename>-<6hex-of-full-path>-<index>`
+Session name = `<tool>-<dir-basename>-<6hex-of-full-path>-<index>`, where `<tool>` is
+`cc` (Claude Code) or `oc` (opencode). Each tool has its **own index space**, so `oc 2`
+always means opencode session 2 and never collides with `cc 2`.
 
 - The 6-hex hash of the **full path** disambiguates two different dirs with the same
   basename (e.g. two `web/` dirs).
@@ -114,10 +116,18 @@ Session name = `cc-<dir-basename>-<6hex-of-full-path>-<index>`
 | `cc N`          | **Attach-or-create** agent N in this dir (reattach after a crash) |
 | `cc N --flag …` | Extra args pass through to the launched command (e.g. `cc 1 --continue`) |
 | `ccls`          | List sessions for the **current** project |
-| `ccall`         | List **all** cc-* sessions across projects |
+| `oc`, `oc N`, `oc N --flag …` | Same as `cc`, but runs **opencode** (`oc-…` sessions) |
+| `ccall`         | List **all** cc-*/oc-* sessions across projects (TOOL column shows which) |
 | `ccnote N text` | Annotate session N (shown by `ccls`/`ccall`) — tag it *after* its purpose emerges |
+| `ocnote N text` | Same, for opencode session N |
 
-The command each session runs is `$CC_CMD` (default `claude`).
+The command each session runs is `$CC_CMD` (default `claude`) for `cc`, `$OC_CMD`
+(default `opencode`) for `oc`. The SendMessage isolation hooks apply only to `claude`.
+
+opencode note: it is a full-screen (alt-screen) TUI by design, so it never has native
+scrollback/touch-scroll — ccmux gives it crash survival and reattach only. After a
+*terminal* crash, the new terminal never saw opencode's alt-screen switch, so its
+repaint lands on the main screen (cosmetic; the session itself is fine).
 
 ### Detach / reattach
 - Detach: **Ctrl-\\** (ccmux default; the inner app never sees it — override with
@@ -218,7 +228,7 @@ sessions are not dropped.)
 ## Files
 
 - `ccmux.py` — the session manager.
-- `cc.sh` — the `cc`/`ccls`/`ccall`/`ccnote` shell functions (ccmux backend).
+- `cc.sh` — the `cc`/`oc`/`ccls`/`ccall`/`ccnote`/`ocnote` shell functions (ccmux backend).
 - `cc-isolate.py` — SendMessage guard hooks that keep a session from messaging peer sessions.
 - `cc.sh.abduco.bak` — the previous abduco-backed `cc.sh` (one-line revert).
 - `gmtest.py` — regression suite for ccmux (run from this dir with
