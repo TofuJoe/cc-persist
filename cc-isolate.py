@@ -7,7 +7,7 @@ Hook script, wired in by cc.sh via `claude --settings`. Two modes:
   guard   PreToolUse on SendMessage: allow only targets recorded above; anything else
           (another terminal's session) gets CC_ISOLATE's decision: ask (default) or deny.
 """
-import json, os, re, sys, time
+import contextlib, fcntl, json, os, re, sys, time
 
 STATE = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"),
                      "cc", "isolate")
@@ -15,6 +15,17 @@ STATE = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.
 
 def path(sid):
     return os.path.join(STATE, re.sub(r"[^A-Za-z0-9_-]", "_", sid) + ".json")
+
+
+@contextlib.contextmanager
+def locked(sid):
+    """Serialize record()'s read-modify-write. Parallel Agent launches fire their
+    PostToolUse hooks concurrently; unlocked, the last writer silently dropped the
+    others' agentIds and the guard then flagged the session's own subagents."""
+    os.makedirs(STATE, mode=0o700, exist_ok=True)
+    with open(path(sid) + ".lock", "a") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        yield
 
 
 def load(sid):
@@ -28,17 +39,22 @@ def load(sid):
 
 def save(sid, st):
     os.makedirs(STATE, mode=0o700, exist_ok=True)
-    tmp = path(sid) + ".tmp"
+    tmp = "%s.%d.tmp" % (path(sid), os.getpid())
     with open(tmp, "w") as f:
         json.dump({k: sorted(v) for k, v in st.items()}, f)
     os.replace(tmp, path(sid))
     # Prune state of sessions untouched for 60 days (kept long: --continue can revive agents).
     cutoff = time.time() - 60 * 86400
     for n in os.listdir(STATE):
+        if n.endswith(".lock"):
+            continue                    # may be held right now; harmless to keep
         p = os.path.join(STATE, n)
         try:
             if os.path.getmtime(p) < cutoff:
                 os.unlink(p)
+                if p.endswith(".json"):
+                    with contextlib.suppress(OSError):
+                        os.unlink(p[:-5] + ".json.lock")
         except OSError:
             pass
 
@@ -47,6 +63,11 @@ def record(ev):
     tool, inp, resp = ev.get("tool_name"), ev.get("tool_input") or {}, ev.get("tool_response") or {}
     if not isinstance(resp, dict):
         return
+    with locked(ev["session_id"]):
+        _record(ev, tool, inp, resp)
+
+
+def _record(ev, tool, inp, resp):
     st = load(ev["session_id"])
     before = {k: set(v) for k, v in st.items()}
     if tool == "Agent":
