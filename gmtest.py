@@ -65,3 +65,29 @@ subprocess.run(["pkill", "-f", "while true; do echo tick"])
 os.kill(pid5, signal.SIGKILL); os.close(fd5); time.sleep(0.8)
 l6 = listing()
 print("6. teardown on prog exit  :", "PASS" if l6 == "" else "FAIL", "->", repr(l6))
+
+# 7. Ctrl-Z suspends the CLIENT as a real shell job (program keeps running), `fg` reattaches
+N7 = "sess-test-tstp"
+bpid, bfd = pty.fork()
+if bpid == 0:
+    os.environ["PS1"] = "PROMPT$ "
+    os.execvp("bash", ["bash", "--norc", "--noprofile", "-i"])
+fcntl.ioctl(bfd, termios.TIOCSWINSZ, SZ); read_for(bfd, 0.5)
+os.write(bfd, ("python3 ccmux.py run %s sh -c '%s'\r" % (N7, prog.replace("tick", "tock"))).encode())
+o7a = read_for(bfd, 1.5)
+os.write(bfd, b"\x1a"); o7b = read_for(bfd, 1.0)
+l7 = listing()
+stopped = b"Stopped" in o7b and "detached\t" in l7 and N7 in l7
+time.sleep(1.0)                                   # program keeps ticking while we're stopped
+os.write(bfd, b"fg\r"); o7c = read_for(bfd, 1.5)
+before = max([int(x) for x in re.findall(rb'tock (\d+)', o7a)] or [-1])
+after = [int(x) for x in re.findall(rb'tock (\d+)', o7c)]
+l7c = listing()
+ok = stopped and after and max(after) > before + 3 and ("attached\t" in l7c)
+print("7. Ctrl-Z suspend + fg    :", "PASS" if ok else "FAIL",
+      "(stopped=%s, before=%d, after=%s)" % (stopped, before, max(after) if after else None))
+subprocess.run(["pkill", "-f", "while true; do echo tock"])
+time.sleep(0.6)
+try: os.kill(bpid, signal.SIGKILL)
+except OSError: pass
+print("   list after cleanup ->", repr(listing()))

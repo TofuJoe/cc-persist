@@ -18,10 +18,16 @@ Commands:
 
 Keys:
   Ctrl-\\   detach (leave the program running); override with CCMUX_DETACH=\\xNN
+  Ctrl-Z   suspend the CLIENT like a shell job: detach + SIGTSTP self, `fg` reattaches.
+           The program keeps running meanwhile. Caught here because the program itself
+           can't stop: it leads its own session under the server, so its process group
+           is orphaned and the kernel discards its SIGTSTP (Claude would sit forever in
+           "suspended, run fg" limbo). Override with CCMUX_SUSPEND=\\xNN; empty = pass through.
 
 Env:
   CCMUX_DIR     session socket dir (default ~/.ccmux)
   CCMUX_DETACH  detach key byte, e.g. \\x1c (default Ctrl-\\)
+  CCMUX_SUSPEND suspend key byte (default \\x1a = Ctrl-Z; empty = send it to the program)
   CCMUX_BUF     max replay-buffer bytes shown on reattach (default 1048576)
   CCMUX_SLICE   systemd user slice the program is launched into via
                 `systemd-run --user --scope` (default cc.slice; empty = plain exec).
@@ -37,6 +43,9 @@ if _dk:
     except ValueError: DETACH = b"\x1c"
 else:
     DETACH = b"\x1c"                       # Ctrl-\
+_sk = os.environ.get("CCMUX_SUSPEND", "\\x1a")
+try: SUSPEND = bytes([int(_sk.replace("\\x", ""), 16)]) if _sk else None
+except ValueError: SUSPEND = b"\x1a"
 try: MAXBUF = max(0, int(os.environ.get("CCMUX_BUF") or (1 << 20)))
 except ValueError: MAXBUF = 1 << 20
 SLICE = os.environ.get("CCMUX_SLICE", "cc.slice")
@@ -209,7 +218,9 @@ def _set_cmdline(title):
 
 
 def _client(c):
+    """Attach on socket c. Returns True if the user suspended (Ctrl-Z), else None."""
     _set_cmdline("ccmux")
+    suspend = False
     try: c.sendall(b"A")
     except OSError: sys.exit("ccmux: attach failed")
     try: msg, fds, _, _ = socket.recv_fds(c, 1, 1)
@@ -250,11 +261,14 @@ def _client(c):
                 try: d = os.read(0, 65536)
                 except OSError: d = b""
                 if not d: break
-                if DETACH in d:                 # detach: forward anything before the key, leave
-                    pre = d.split(DETACH, 1)[0]
+                keys = [k for k in (DETACH, SUSPEND) if k and k in d]
+                if keys:                        # detach/suspend: forward bytes before the key, leave
+                    k = min(keys, key=d.index)
+                    pre = d.split(k, 1)[0]
                     if pre:
                         try: os.write(master, pre)
                         except OSError: pass
+                    suspend = k == SUSPEND
                     break
                 try: os.write(master, d)
                 except OSError: break
@@ -272,6 +286,22 @@ def _client(c):
             except Exception: pass
         try: c.close()
         except OSError: pass
+        try: os.close(master)                   # fully detached: server drains+buffers output
+        except OSError: pass
+    return suspend or None
+
+
+def _attach(path, s):
+    """Run the client on connected socket s; on Ctrl-Z stop ourselves as a shell job and,
+    once continued (`fg`), reattach - the replay buffer repaints what happened meanwhile."""
+    while _client(s):
+        sys.stdout.write("\r\n[ccmux: suspended - session keeps running; `fg` to reattach]\r\n")
+        sys.stdout.flush()
+        os.kill(os.getpid(), signal.SIGTSTP)    # no-op if our own pgrp is orphaned: reattach now
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try: s.connect(path)
+        except OSError:
+            sys.exit("ccmux: session ended while suspended")
 
 
 # --------------------------------------------------------------------------- commands
@@ -280,10 +310,12 @@ def _run(name, cmd):
     path = _sock(name)
     if os.path.lexists(path):                   # live socket, stale socket, or dangling symlink
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        try: s.connect(path); _client(s); return
+        try: s.connect(path)
         except OSError:
             try: os.unlink(path)                # stale socket or dead (e.g. migrated) symlink
             except OSError: pass
+        else:
+            _attach(path, s); return
     if not cmd:
         sys.exit("ccmux: no session %r and no command to create it" % name)
 
@@ -291,7 +323,7 @@ def _run(name, cmd):
     try: lsock.bind(path)
     except OSError:                             # lost a create race -> attach
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        try: s.connect(path); _client(s); return
+        try: s.connect(path); _attach(path, s); return
         except OSError: sys.exit("ccmux: cannot create session %r" % name)
     try: os.chmod(path, 0o600)
     except OSError: pass
@@ -309,7 +341,7 @@ def _run(name, cmd):
         except OSError: time.sleep(0.02)
     else:
         sys.exit("ccmux: server did not start")
-    _client(s)
+    _attach(path, s)
 
 
 def _list():
