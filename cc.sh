@@ -38,8 +38,9 @@ cc(){
             | grep -oE -- "-${hash}-[0-9]+$" | grep -oE '[0-9]+$')"
     idx=1; while grep -qx "$idx" <<<"$used"; do idx=$((idx+1)); done
   fi
-  printf '\033]0;%s\007' "${slug}#${idx}"        # label the terminal tab
-  $CCMUX run "${prefix}${idx}" "$CC_CMD" "$@"
+  printf '\033]0;%s\007' "${PWD/#$HOME/\~}#${idx}"   # label the tab: ~/path#idx
+  # Stop Claude from overwriting the tab title with its own.
+  CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 $CCMUX run "${prefix}${idx}" "$CC_CMD" "$@"
 }
 
 # Shared pretty-printer. Emits: "  #IDX  STATE  PROJECT  CREATED  NOTE"
